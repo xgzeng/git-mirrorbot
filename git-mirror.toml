@@ -1,3 +1,4 @@
 github_repos = [
-    "xgzeng/git-mirrorbot"
+    "xgzeng/git-mirrorbot",
+    "torvalds/linux"
 ]

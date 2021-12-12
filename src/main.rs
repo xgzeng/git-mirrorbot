@@ -21,10 +21,12 @@ fn main() {
 
     log::info!("{:?}", config);
 
-    let mut repo_manager = repo::RepoManager::new();
+    let mut repo_manager = RepoManager::new();
     for repo_name in &config.github_repos {
         repo_manager
             .add_github_repo(repo_name)
             .expect("add repo failed")
     }
+
+    repo_manager.update();
 }
