@@ -1,6 +1,6 @@
 mod progress;
 
-use anyhow::{anyhow, Result};
+use anyhow::{anyhow, Context, Result};
 use std::path::PathBuf;
 
 use progress::{FetchProgressHandler, ProgressIndicator};
@@ -45,8 +45,15 @@ impl RepoMirror {
         let mut builder = git2::build::RepoBuilder::new();
         builder.bare(true);
         builder.fetch_options(fetch_options);
-        builder
-            .remote_create(|repo, name, url| repo.remote_with_fetch(name, url, "+refs/*:refs/*"));
+        builder.remote_create(|repo, name, url| {
+            // Create remote with a mirror refspec
+            let remote = repo.remote_with_fetch(name, url, "+refs/*:refs/*")?;
+            // Set the mirror setting to true on this remote
+            let mut cfg = repo.config()?;
+            let cfg_item = format!("remote.{}.mirror", name);
+            cfg.set_bool(&cfg_item, true)?;
+            Ok(remote)
+        });
 
         builder.clone(&self.url, &self.path)?;
         Ok(())
@@ -57,15 +64,31 @@ impl RepoMirror {
         let mut remote = repo.find_remote("origin")?;
         // let mut refspecs = remote.fetch_refspecs()?;
 
-        let mut fetch_options = git2::FetchOptions::new();
+        log::info!("connect {}", remote.url().expect("remote no url"));
+        remote
+            .connect(git2::Direction::Fetch)
+            .context("connect to remote")?;
+
+        let mut fetch_opts = git2::FetchOptions::new();
         match progress_cb {
             Some(cb) => {
-                fetch_options.remote_callbacks(cb);
+                fetch_opts.remote_callbacks(cb);
                 ()
             }
             _ => (),
         }
-        remote.fetch(&["+refs/*:refs/*"], Some(&mut fetch_options), None)?;
+
+        log::info!("remote download");
+        let specs: Vec<&str> = vec![];
+        remote.download(&specs, Some(&mut fetch_opts))?;
+
+        remote.update_tips(
+            None, // progress_cb.as_mut(),
+            true,
+            git2::AutotagOption::All,
+            Some("some message"),
+        )?;
+        // remote.fetch(, Some(&mut fetch_options), None)?;
         Ok(())
     }
 }
@@ -116,7 +139,7 @@ impl RepoManager {
             let mut progress_handler = ProgressIndicator::new();
             match r.sync(Some(progress_handler.as_remote_callbacks())) {
                 // to_remote_callbacks(&mut progress_handler)
-                Err(err) => log::error!("update '{}' error: {}", r.url, err),
+                Err(err) => log::error!("update '{}' error: {:?}", r.url, err),
                 _ => (),
             }
         }

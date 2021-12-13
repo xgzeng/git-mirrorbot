@@ -1,3 +1,4 @@
+use indicatif::{ProgressBar, ProgressStyle};
 use std::cell::RefCell;
 use std::rc::Rc;
 
@@ -57,42 +58,38 @@ impl FetchProgressHandler for LogFetchProgress {
 }
 
 pub struct ProgressIndicator {
-    indicator: indicatif::ProgressBar,
+    indicator: ProgressBar,
 }
-// let indicator = ;
-// let pcb = move |total: usize, received: usize| {
-// };
 
 impl FetchProgressHandler for ProgressIndicator {
     fn on_transfer(&mut self, p: git2::Progress) {
-        // log::info!(
-        //     "objects: total {}, received {},",
-        //     p.total_objects(),
-        //     p.received_objects()
-        // );
-
-        let total_u64 = p.total_objects().try_into().unwrap();
-        if total_u64 != self.indicator.length() {
-            self.indicator.set_length(total_u64);
+        let total = p.total_objects() as u64;
+        if total != self.indicator.length() {
+            self.indicator.set_length(total);
         }
 
-        let received_u64 = p.received_objects().try_into().unwrap();
-        self.indicator.set_position(received_u64);
+        let received = p.received_objects() as u64;
+        self.indicator.set_position(received);
     }
 
     fn on_update_tips(&mut self, name: &str, oid_from: git2::Oid, oid_to: git2::Oid) {
         log::info!("update_tips: {} {} {}", name, oid_from, oid_to);
     }
 
-    fn on_sideband(&mut self, msg: &[u8]) {
-        log::info!("sideband_progress: {}", String::from_utf8_lossy(msg));
+    fn on_sideband(&mut self, bytes: &[u8]) {
+        let msg = String::from_utf8_lossy(bytes);
+        self.indicator.set_message(msg.into_owned());
+        self.indicator.tick();
     }
 }
 
 impl ProgressIndicator {
     pub fn new() -> Self {
-        ProgressIndicator {
-            indicator: indicatif::ProgressBar::new(100),
-        }
+        let ind = ProgressBar::new(100);
+        ind.set_style(
+            ProgressStyle::default_bar()
+                .template("[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg}"),
+        );
+        ProgressIndicator { indicator: ind }
     }
 }
