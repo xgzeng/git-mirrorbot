@@ -19,39 +19,26 @@ pub struct RepoManager {
 impl RepoMirror {
     pub fn sync(&self, progress_handler: Option<&mut dyn FetchProgressHandler>) -> Result<()> {
         if !self.path.exists() {
-            log::info!("{} not exists, sync by clone", self.path.display());
-            self.clone(progress_handler)?;
-        } else {
-            log::info!("{} already exists, sync by fetch", self.path.display());
-            self.fetch(progress_handler)?;
+            log::info!("{} not exists, init bare repository", self.path.display());
+            self.init()?;
         }
+        self.fetch(progress_handler)?;
         Ok(())
     }
 
-    fn clone(&self, progress_handler: Option<&mut dyn FetchProgressHandler>) -> Result<()> {
-        let mut fetch_opts = git2::FetchOptions::new();
-        if let Some(handler) = progress_handler {
-            fetch_opts.remote_callbacks(handler.as_remote_callbacks());
-        }
-
-        let mut builder = git2::build::RepoBuilder::new();
-        builder.bare(true);
-        builder.fetch_options(fetch_opts);
-        builder.remote_create(|repo, name, url| {
-            // Create remote with a mirror refspec
-            let remote = repo.remote_with_fetch(name, url, "+refs/*:refs/*")?;
-            // Set the mirror setting to true on this remote
-            let mut cfg = repo.config()?;
-            let cfg_item = format!("remote.{}.mirror", name);
-            cfg.set_bool(&cfg_item, true)?;
-            Ok(remote)
-        });
-
-        builder.clone(&self.url, &self.path)?;
+    fn init(&self) -> Result<()> {
+        std::fs::create_dir_all(&self.path)?;
+        let repo = git2::Repository::init_bare(&self.path)?;
+        // create origin remote
+        let _remote = repo.remote_with_fetch("origin", &self.url, "+refs/*:refs/*")?;
+        let mut cfg = repo.config()?;
+        let cfg_item = format!("remote.{}.mirror", "origin");
+        cfg.set_bool(&cfg_item, true)?;
         Ok(())
     }
 
     fn fetch(&self, progress_handler: Option<&mut dyn FetchProgressHandler>) -> Result<()> {
+        log::info!("fetch {}", self.url);
         let mut fetch_opts = git2::FetchOptions::new();
         if let Some(handler) = progress_handler {
             fetch_opts.remote_callbacks(handler.as_remote_callbacks());
@@ -78,21 +65,14 @@ impl RepoMirror {
 
         //     let specs: Vec<&str> = vec![];
         //     remote.download(&specs, Some(&mut fetch_opts))?;
-
-        //     // if let Some(handler) = &progress_handler {
-        //     //     handler.on_download_begin();
-        //     // }
         // }
-
         // remote.update_tips(
         //     None, // callbacks1.as_mut(),
         //     true,
         //     git2::AutotagOption::All,
         //     Some("some message"),
         // )?;
-
-        let refs = ["+refs/*:refs/*"];
-        remote.fetch(&refs, Some(&mut fetch_opts), None)?;
+        remote.fetch(vec![], Some(&mut fetch_opts), None)?;
         Ok(())
     }
 }
@@ -102,21 +82,16 @@ impl RepoManager {
         RepoManager::default()
     }
 
-    // pub fn add_github_org(&mut self, org_name: &String) {
-    //     log::error!("github organization not supported yet");
-    //     log::info!("add github organization {}", org_name);
-    //     self.github_orgs.push(GithubOrg {
-    //         name: org_name.clone(),
-    //         repo_list: vec![],
-    //     });
-    // }
     fn parse_github_repo_string(repo_str: &str) -> Result<RepoMirror> {
         let names: Vec<&str> = repo_str.split('/').collect();
         match &names[..] {
-            [org_name, repo_name] => {
+            [github_user, github_repo] => {
                 let repo = RepoMirror {
-                    url: format!("https://github.com/{}/{}.git", org_name, repo_name),
-                    path: PathBuf::from(format!("mirrors/{}/{}.git", org_name, repo_name)),
+                    url: format!("https://github.com/{}/{}.git", github_user, github_repo),
+                    path: PathBuf::from(format!(
+                        "mirrors/github/{}/{}.git",
+                        github_user, github_repo
+                    )),
                 };
                 Ok(repo)
             }
@@ -134,7 +109,7 @@ impl RepoManager {
             Ok(())
         } else {
             // self.add_github_org(name)
-            Err(anyhow!("github organization not supported yet"))
+            Err(anyhow!("mirror github user not supported yet"))
         }
     }
 
