@@ -9,6 +9,8 @@ pub trait FetchProgressHandler {
     fn on_update_tips(&mut self, name: &str, oid_from: git2::Oid, oid_to: git2::Oid);
     fn on_sideband(&mut self, msg: &[u8]);
 
+    fn on_pack(&mut self, stage: git2::PackBuilderStage, m: usize, n: usize);
+
     fn as_remote_callbacks(&mut self) -> git2::RemoteCallbacks<'_> {
         let mut callbacks = git2::RemoteCallbacks::new();
 
@@ -74,15 +76,16 @@ impl FetchProgressHandler for ProgressIndicator {
     fn on_transfer(&mut self, p: git2::Progress) {
         match self.stage {
             ProgressStage::Download(prev_received_bytes, prev_recv_time) => {
-                let received = p.received_objects() as u64;
                 let new_recv_time = Instant::now();
-                let duration = new_recv_time.duration_since(prev_recv_time).as_secs();
-                if duration != 0 {
-                    let datarate = received - prev_received_bytes;
-                    self.stage = ProgressStage::Download(received, new_recv_time);
-                    self.indicator.set_message(format!("{}B/s", datarate));
+                let duration = new_recv_time.duration_since(prev_recv_time).as_secs_f32();
+                if duration > 2.0 {
+                    let recv_bytes = p.received_bytes() as u64;
+                    let datarate = (recv_bytes - prev_received_bytes) as f32 / duration;
+                    self.stage = ProgressStage::Download(recv_bytes, new_recv_time);
+                    self.indicator
+                        .set_message(format!("{}kB/s", datarate / 1000.0));
                 }
-                self.indicator.set_position(received);
+                self.indicator.set_position(p.received_objects() as u64);
             }
             _ => {
                 // enter download state
@@ -103,6 +106,10 @@ impl FetchProgressHandler for ProgressIndicator {
                     ));
             }
         }
+    }
+
+    fn on_pack(&mut self, stage: git2::PackBuilderStage, m: usize, n: usize) {
+        log::info!("pack: {:?} {} {}", stage, m, n);
     }
 
     fn on_update_tips(&mut self, name: &str, oid_from: git2::Oid, oid_to: git2::Oid) {
