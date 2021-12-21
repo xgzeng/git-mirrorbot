@@ -1,4 +1,8 @@
 github_repos = [
-    "xgzeng/git-mirrorbot",
-    "torvalds/linux"
+    #"xgzeng/git-mirrorbot",
+    # "torvalds/linux"
 ]
+
+[[repo]]
+url = "https://gitee.com/mirrors/linux.git"
+path = "gitee/linux"

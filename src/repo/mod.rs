@@ -1,13 +1,21 @@
 mod progress;
 
 use anyhow::{anyhow, Context, Result};
-use std::path::PathBuf;
+use serde_derive::Deserialize;
+use std::path::{Path, PathBuf};
 
 use progress::{FetchProgressHandler, ProgressIndicator};
 
-struct RepoMirror {
+#[derive(Deserialize, Debug, Clone)]
+pub struct RepoConfig {
     url: String,
-    path: PathBuf,
+    path: String,
+    #[serde(default)]
+    mirror_urls: Vec<String>,
+}
+
+struct RepoMirror {
+    config: RepoConfig,
 }
 
 #[derive(Default)]
@@ -17,9 +25,21 @@ pub struct RepoManager {
 }
 
 impl RepoMirror {
+    fn local_path(&self) -> PathBuf {
+        // PathBuf::from(self.config.path)
+        let mut p = PathBuf::from("mirrors").join(&self.config.path);
+        if p.extension().is_none() {
+            p.set_extension("git");
+        }
+        p
+    }
+
     pub fn sync(&self, progress_handler: Option<&mut dyn FetchProgressHandler>) -> Result<()> {
-        if !self.path.exists() {
-            log::info!("{} not exists, init bare repository", self.path.display());
+        if !self.local_path().exists() {
+            log::info!(
+                "{} not exists, init bare repository",
+                self.local_path().display()
+            );
             self.init()?;
         }
         self.fetch(progress_handler)?;
@@ -27,10 +47,11 @@ impl RepoMirror {
     }
 
     fn init(&self) -> Result<()> {
-        std::fs::create_dir_all(&self.path)?;
-        let repo = git2::Repository::init_bare(&self.path)?;
+        let repo_dir = self.local_path();
+        std::fs::create_dir_all(&repo_dir)?;
+        let repo = git2::Repository::init_bare(&repo_dir)?;
         // create origin remote
-        let _remote = repo.remote_with_fetch("origin", &self.url, "+refs/*:refs/*")?;
+        let _remote = repo.remote_with_fetch("origin", &self.config.url, "+refs/*:refs/*")?;
         let mut cfg = repo.config()?;
         let cfg_item = format!("remote.{}.mirror", "origin");
         cfg.set_bool(&cfg_item, true)?;
@@ -38,20 +59,29 @@ impl RepoMirror {
     }
 
     fn fetch(&self, progress_handler: Option<&mut dyn FetchProgressHandler>) -> Result<()> {
-        log::info!("fetch {}", self.url);
+        log::info!("fetch {}", self.config.url);
         let mut fetch_opts = git2::FetchOptions::new();
         if let Some(handler) = progress_handler {
             fetch_opts.remote_callbacks(handler.as_remote_callbacks());
         }
 
-        let repo = git2::Repository::open_bare(&self.path)?;
-        let mut remote = repo.find_remote("origin")?;
+        let repo = git2::Repository::open_bare(self.local_path())?;
+        let mut remote;
+        match self.config.mirror_urls.as_slice() {
+            [url, ..] => {
+                log::info!("user mirror {}", url);
+                remote = repo.remote_anonymous(url)?;
+            }
+            _ => {
+                remote = repo.find_remote("origin")?;
+            }
+        }
 
-        // log::info!("connect {}", remote.url().expect("remote no url"));
-        // remote
-        //     .connect(git2::Direction::Fetch)
-        //     .context("connect to remote")?;
+        remote
+            .connect(git2::Direction::Fetch)
+            .context("connect to remote")?;
 
+        log::info!("remote connected");
         // {
         //     log::info!("remote download");
         //     let fetch_opts = git2::FetchOptions::new();
@@ -72,7 +102,8 @@ impl RepoMirror {
         //     git2::AutotagOption::All,
         //     Some("some message"),
         // )?;
-        remote.fetch(vec![], Some(&mut fetch_opts), None)?;
+        let empty_refs = Vec::<&str>::new();
+        remote.fetch(&empty_refs, Some(&mut fetch_opts), None)?;
         Ok(())
     }
 }
@@ -82,16 +113,14 @@ impl RepoManager {
         RepoManager::default()
     }
 
-    fn parse_github_repo_string(repo_str: &str) -> Result<RepoMirror> {
+    fn parse_github_repo_string(repo_str: &str) -> Result<RepoConfig> {
         let names: Vec<&str> = repo_str.split('/').collect();
         match &names[..] {
-            [github_user, github_repo] => {
-                let repo = RepoMirror {
-                    url: format!("https://github.com/{}/{}.git", github_user, github_repo),
-                    path: PathBuf::from(format!(
-                        "mirrors/github/{}/{}.git",
-                        github_user, github_repo
-                    )),
+            [user, repo] => {
+                let repo = RepoConfig {
+                    url: format!("https://github.com/{}/{}.git", user, repo),
+                    path: format!("github/{}/{}.git", user, repo),
+                    mirror_urls: vec![format!("https://hub.fastgit.org/{}/{}", user, repo)],
                 };
                 Ok(repo)
             }
@@ -101,12 +130,19 @@ impl RepoManager {
             }
         }
     }
+
+    pub fn add_repo(&mut self, cfg: RepoConfig) -> Result<()> {
+        if !Path::new(&cfg.path).is_relative() {
+            return Err(anyhow!("path can only been relative"));
+        }
+        self.repo_list.push(RepoMirror { config: cfg });
+        Ok(())
+    }
+
     pub fn add_github_repo(&mut self, name: &str) -> Result<()> {
         log::info!("add github repository {}", name);
         if name.contains('/') {
-            let repo = Self::parse_github_repo_string(name)?;
-            self.repo_list.push(repo);
-            Ok(())
+            self.add_repo(Self::parse_github_repo_string(name)?)
         } else {
             // self.add_github_org(name)
             Err(anyhow!("mirror github user not supported yet"))
@@ -116,10 +152,11 @@ impl RepoManager {
     pub fn update(&self) {
         for r in &self.repo_list {
             let mut progress_handler = ProgressIndicator::new();
-            if let Err(err) = r.sync(Some(&mut progress_handler)) {
-                log::error!("update '{}' error: {:?}", r.url, err);
+            let sync_result = r.sync(Some(&mut progress_handler));
+            drop(progress_handler);
+            if let Err(err) = sync_result {
+                log::error!("sync '{}' error: {:?}", r.config.url, err);
             }
-            progress_handler.hide();
         }
     }
 }
