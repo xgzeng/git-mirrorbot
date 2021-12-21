@@ -48,6 +48,7 @@ impl RepoMirror {
 
     fn init(&self) -> Result<()> {
         let repo_dir = self.local_path();
+        log::info!("init bare repository {}", repo_dir.display());
         std::fs::create_dir_all(&repo_dir)?;
         let repo = git2::Repository::init_bare(&repo_dir)?;
         // create origin remote
@@ -65,17 +66,25 @@ impl RepoMirror {
             fetch_opts.remote_callbacks(handler.as_remote_callbacks());
         }
 
+        log::info!("open bare repository {}", self.local_path().display());
         let repo = git2::Repository::open_bare(self.local_path())?;
-        let mut remote;
-        match self.config.mirror_urls.as_slice() {
-            [url, ..] => {
-                log::info!("user mirror {}", url);
-                remote = repo.remote_anonymous(url)?;
-            }
-            _ => {
-                remote = repo.find_remote("origin")?;
+
+        // check main url match with origin remote
+        {
+            let origin_remote = repo.find_remote("origin")?;
+            if origin_remote.url().unwrap_or("") != self.config.url {
+                return Err(anyhow!("origin remote url not match"));
             }
         }
+
+        // determine mirror to use
+        let mut remote = match self.config.mirror_urls.as_slice() {
+            [url, ..] => {
+                log::info!("user mirror {}", url);
+                repo.remote_anonymous(url)?
+            }
+            _ => repo.find_remote("origin")?,
+        };
 
         remote
             .connect(git2::Direction::Fetch)
@@ -118,9 +127,9 @@ impl RepoManager {
         match &names[..] {
             [user, repo] => {
                 let repo = RepoConfig {
-                    url: format!("https://github.com/{}/{}.git", user, repo),
+                    url: format!("git://github.com/{}/{}.git", user, repo),
                     path: format!("github/{}/{}.git", user, repo),
-                    mirror_urls: vec![format!("https://hub.fastgit.org/{}/{}", user, repo)],
+                    mirror_urls: vec![], // vec![format!("https://hub.fastgit.org/{}/{}", user, repo)],
                 };
                 Ok(repo)
             }
