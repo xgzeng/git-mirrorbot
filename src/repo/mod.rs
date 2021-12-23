@@ -1,3 +1,4 @@
+pub mod github_helper;
 mod progress;
 
 use anyhow::{anyhow, Context, Result};
