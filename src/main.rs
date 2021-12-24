@@ -1,16 +1,14 @@
 mod repo;
 
 use anyhow::Context;
-use repo::github_helper::list_github_user_repos;
-use repo::{MirrorBot, RepoConfig};
+use repo::MirrorBot;
 use serde_derive::Deserialize;
 
 #[derive(Deserialize, Debug)]
 struct MainConfig {
     github_repos: Vec<String>,
-
-    #[serde(default)]
-    repo: Vec<RepoConfig>,
+    // #[serde(default)]
+    // repo: Vec<RepoConfig>,
 }
 
 fn main() {
@@ -38,10 +36,10 @@ fn main() {
         }
     }
 
-    for r in &config.repo {
-        let mirror = MirrorBot::new(r).expect("");
-        if let Err(err) = mirror.sync_with_progressbar() {
-            log::error!("sync {} error: {:?}", r.url, err);
-        }
-    }
+    // for r in &config.repo {
+    //     let mirror = MirrorBot::new(r).expect("");
+    //     if let Err(err) = mirror.sync_with_progressbar() {
+    //         log::error!("sync {} error: {:?}", r, err);
+    //     }
+    // }
 }

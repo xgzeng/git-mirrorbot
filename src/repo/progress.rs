@@ -81,7 +81,13 @@ impl FetchProgressHandler for ProgressIndicator {
                 let duration = new_recv_time.duration_since(prev_recv_time).as_secs_f32();
                 if duration > 2.0 {
                     let recv_bytes = p.received_bytes() as u64;
-                    let datarate = (recv_bytes - prev_received_bytes) as f32 / duration;
+
+                    let datarate = if recv_bytes > prev_received_bytes {
+                        (recv_bytes - prev_received_bytes) as f32 / duration
+                    } else {
+                        0.0
+                    };
+
                     self.stage = ProgressStage::Download(recv_bytes, new_recv_time);
                     self.indicator.set_message(format!(
                         "{}kB/s, local {}",
@@ -113,7 +119,7 @@ impl FetchProgressHandler for ProgressIndicator {
     }
 
     fn on_pack(&mut self, stage: git2::PackBuilderStage, m: usize, n: usize) {
-        // log::info!("pack: {:?} {} {}", stage, m, n);
+        log::info!("pack: {:?} {} {}", stage, m, n);
     }
 
     fn on_update_tips(&mut self, name: &str, oid_from: git2::Oid, oid_to: git2::Oid) {
@@ -121,7 +127,16 @@ impl FetchProgressHandler for ProgressIndicator {
     }
 
     fn on_sideband(&mut self, bytes: &[u8]) {
-        log::info!("remote: {}", String::from_utf8_lossy(bytes));
+        match self.stage {
+            ProgressStage::Sideband => {
+                self.indicator
+                    .set_message(format!("remote: {}", String::from_utf8_lossy(bytes)));
+            }
+            _ => {
+                self.stage = ProgressStage::Sideband;
+                self.indicator = ProgressBar::new_spinner();
+            }
+        }
     }
 }
 

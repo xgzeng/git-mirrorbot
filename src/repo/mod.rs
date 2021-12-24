@@ -1,57 +1,42 @@
-pub mod github_helper;
+mod github;
+
 mod progress;
 
 use anyhow::{anyhow, Context, Result};
-use serde_derive::Deserialize;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use progress::{FetchProgressHandler, ProgressIndicator};
 
-#[derive(Deserialize, Debug, Clone)]
 pub struct RepoConfig {
-    pub url: String,
-    path: String,
-    #[serde(default)]
+    url: String,  // main url
+    path: String, // mirror url
     mirror_urls: Vec<String>,
 }
 
-pub struct MirrorBot {
-    config: RepoConfig,
+// represent a single git repository
+struct RepoMirror {
+    url: String,  // main url
+    path: String, // mirror url
+    mirror_urls: Vec<String>,
 }
 
-impl MirrorBot {
+impl RepoMirror {
+    fn new(cfg: RepoConfig) -> Self {
+        RepoMirror {
+            url: cfg.url,
+            path: cfg.path,
+            mirror_urls: cfg.mirror_urls,
+        }
+    }
+
     fn local_path(&self) -> PathBuf {
         // PathBuf::from(self.config.path)
-        let mut p = PathBuf::from("mirrors").join(&self.config.path);
+        let mut p = PathBuf::from("mirrors").join(&self.path);
         if p.extension().is_none() {
             p.set_extension("git");
         }
         p
     }
-
-    pub fn from_simple_name(name: &str) -> Result<Self> {
-        if name.contains('/') {
-            Self::new(&parse_github_repo_string(name)?)
-        } else {
-            // self.add_github_org(name)
-            Err(anyhow!("mirror github user not supported yet"))
-        }
-    }
-
-    pub fn new(cfg: &RepoConfig) -> Result<Self> {
-        if !Path::new(&cfg.path).is_relative() {
-            return Err(anyhow!("path can only been relative"));
-        }
-        Ok(Self {
-            config: cfg.clone(),
-        })
-    }
-
-    pub fn sync_with_progressbar(&self) -> Result<()> {
-        let mut progress_handler = ProgressIndicator::new();
-        self.sync(Some(&mut progress_handler))
-    }
-
     pub fn sync(&self, progress_handler: Option<&mut dyn FetchProgressHandler>) -> Result<()> {
         if !self.local_path().exists() {
             log::info!(
@@ -70,7 +55,7 @@ impl MirrorBot {
         std::fs::create_dir_all(&repo_dir)?;
         let repo = git2::Repository::init_bare(&repo_dir)?;
         // create origin remote
-        let _remote = repo.remote_with_fetch("origin", &self.config.url, "+refs/*:refs/*")?;
+        let _remote = repo.remote_with_fetch("origin", &self.url, "+refs/*:refs/*")?;
         let mut cfg = repo.config()?;
         let cfg_item = format!("remote.{}.mirror", "origin");
         cfg.set_bool(&cfg_item, true)?;
@@ -78,7 +63,7 @@ impl MirrorBot {
     }
 
     fn fetch(&self, progress_handler: Option<&mut dyn FetchProgressHandler>) -> Result<()> {
-        log::info!("fetch {}", self.config.url);
+        log::info!("fetch {}", self.url);
         let mut fetch_opts = git2::FetchOptions::new();
         if let Some(handler) = progress_handler {
             fetch_opts.remote_callbacks(handler.as_remote_callbacks());
@@ -90,13 +75,13 @@ impl MirrorBot {
         // check main url match with origin remote
         {
             let origin_remote = repo.find_remote("origin")?;
-            if origin_remote.url().unwrap_or("") != self.config.url {
+            if origin_remote.url().unwrap_or("") != self.url {
                 return Err(anyhow!("origin remote url not match"));
             }
         }
 
         // determine mirror to use
-        let mut remote = match self.config.mirror_urls.as_slice() {
+        let mut remote = match self.mirror_urls.as_slice() {
             [url, ..] => {
                 log::info!("user mirror {}", url);
                 repo.remote_anonymous(url)?
@@ -135,20 +120,37 @@ impl MirrorBot {
     }
 }
 
-fn parse_github_repo_string(repo_str: &str) -> Result<RepoConfig> {
-    let names: Vec<&str> = repo_str.split('/').collect();
-    match &names[..] {
-        [user, repo] => {
-            let repo = RepoConfig {
-                url: format!("git://github.com/{}/{}.git", user, repo),
-                path: format!("github/{}/{}.git", user, repo),
-                mirror_urls: vec![], // vec![format!("https://hub.fastgit.org/{}/{}", user, repo)],
-            };
-            Ok(repo)
+pub trait RepoProvider {
+    // get repo list
+    fn repos(&self) -> Result<Box<dyn Iterator<Item = RepoConfig>>>;
+}
+
+pub struct MirrorBot {
+    repo_provider: Box<dyn RepoProvider>,
+}
+
+impl MirrorBot {
+    pub fn from_simple_name(name: &str) -> Result<Self> {
+        let repo_provider: Box<dyn RepoProvider>;
+        if name.contains('/') {
+            repo_provider = Box::new(github::GithubSingleRepo::new(name)?);
+        } else {
+            repo_provider = Box::new(github::GithubUserRepos::new(name));
         }
-        _ => {
-            log::error!("invalid github repo name");
-            Err(anyhow!("invalid github repo string"))
+
+        Ok(MirrorBot { repo_provider })
+    }
+
+    pub fn sync_with_progressbar(&self) -> Result<()> {
+        let mut progress_handler = ProgressIndicator::new();
+        // self.config.sync(Some(&mut progress_handler))
+        for repo_cfg in self.repo_provider.repos()? {
+            let repo_mirror = RepoMirror::new(repo_cfg);
+            if let Err(err) = repo_mirror.sync(Some(&mut progress_handler)) {
+                log::error!("sync error: {}", err);
+            }
         }
+
+        Ok(())
     }
 }
