@@ -34,9 +34,10 @@ pub trait FetchProgressHandler {
             true
         });
 
-        // callbacks.pack_progress(|stage, m, n| {
-        //     log::info!("pack_progress: {:?} {} {}", stage, m, n);
-        // });
+        let h4 = rc_handler.clone();
+        callbacks.pack_progress(move |stage, m, n| {
+            h4.borrow_mut().on_pack(stage, m, n);
+        });
         callbacks
     }
 }
@@ -82,8 +83,11 @@ impl FetchProgressHandler for ProgressIndicator {
                     let recv_bytes = p.received_bytes() as u64;
                     let datarate = (recv_bytes - prev_received_bytes) as f32 / duration;
                     self.stage = ProgressStage::Download(recv_bytes, new_recv_time);
-                    self.indicator
-                        .set_message(format!("{}kB/s", datarate / 1000.0));
+                    self.indicator.set_message(format!(
+                        "{}kB/s, local {}",
+                        datarate / 1000.0,
+                        p.local_objects()
+                    ));
                 }
                 self.indicator.set_position(p.received_objects() as u64);
             }
@@ -109,7 +113,7 @@ impl FetchProgressHandler for ProgressIndicator {
     }
 
     fn on_pack(&mut self, stage: git2::PackBuilderStage, m: usize, n: usize) {
-        log::info!("pack: {:?} {} {}", stage, m, n);
+        // log::info!("pack: {:?} {} {}", stage, m, n);
     }
 
     fn on_update_tips(&mut self, name: &str, oid_from: git2::Oid, oid_to: git2::Oid) {
@@ -117,19 +121,7 @@ impl FetchProgressHandler for ProgressIndicator {
     }
 
     fn on_sideband(&mut self, bytes: &[u8]) {
-        match self.stage {
-            ProgressStage::Sideband => (),
-            _ => {
-                self.stage = ProgressStage::Sideband;
-                self.indicator
-                    .set_style(ProgressStyle::default_bar().template("[{elapsed_precise}] {msg}"));
-            }
-        }
-
-        let msg = String::from_utf8_lossy(bytes);
-        // log::info!("remote: {}", msg);
-        self.indicator.set_message(msg.into_owned());
-        self.indicator.tick();
+        log::info!("remote: {}", String::from_utf8_lossy(bytes));
     }
 }
 
@@ -149,8 +141,4 @@ impl ProgressIndicator {
     fn reset(&mut self) {
         self.indicator = ProgressBar::new(100);
     }
-
-    // pub fn hide(&mut self) {
-    //     self.indicator.finish_and_clear();
-    // }
 }

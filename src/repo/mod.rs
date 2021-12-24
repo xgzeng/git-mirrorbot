@@ -9,23 +9,17 @@ use progress::{FetchProgressHandler, ProgressIndicator};
 
 #[derive(Deserialize, Debug, Clone)]
 pub struct RepoConfig {
-    url: String,
+    pub url: String,
     path: String,
     #[serde(default)]
     mirror_urls: Vec<String>,
 }
 
-struct RepoMirror {
+pub struct MirrorBot {
     config: RepoConfig,
 }
 
-#[derive(Default)]
-pub struct RepoManager {
-    // github_orgs: Vec<GithubOrg>,
-    repo_list: Vec<RepoMirror>,
-}
-
-impl RepoMirror {
+impl MirrorBot {
     fn local_path(&self) -> PathBuf {
         // PathBuf::from(self.config.path)
         let mut p = PathBuf::from("mirrors").join(&self.config.path);
@@ -33,6 +27,29 @@ impl RepoMirror {
             p.set_extension("git");
         }
         p
+    }
+
+    pub fn from_simple_name(name: &str) -> Result<Self> {
+        if name.contains('/') {
+            Self::new(&parse_github_repo_string(name)?)
+        } else {
+            // self.add_github_org(name)
+            Err(anyhow!("mirror github user not supported yet"))
+        }
+    }
+
+    pub fn new(cfg: &RepoConfig) -> Result<Self> {
+        if !Path::new(&cfg.path).is_relative() {
+            return Err(anyhow!("path can only been relative"));
+        }
+        Ok(Self {
+            config: cfg.clone(),
+        })
+    }
+
+    pub fn sync_with_progressbar(&self) -> Result<()> {
+        let mut progress_handler = ProgressIndicator::new();
+        self.sync(Some(&mut progress_handler))
     }
 
     pub fn sync(&self, progress_handler: Option<&mut dyn FetchProgressHandler>) -> Result<()> {
@@ -118,55 +135,20 @@ impl RepoMirror {
     }
 }
 
-impl RepoManager {
-    pub fn new() -> Self {
-        RepoManager::default()
-    }
-
-    fn parse_github_repo_string(repo_str: &str) -> Result<RepoConfig> {
-        let names: Vec<&str> = repo_str.split('/').collect();
-        match &names[..] {
-            [user, repo] => {
-                let repo = RepoConfig {
-                    url: format!("git://github.com/{}/{}.git", user, repo),
-                    path: format!("github/{}/{}.git", user, repo),
-                    mirror_urls: vec![], // vec![format!("https://hub.fastgit.org/{}/{}", user, repo)],
-                };
-                Ok(repo)
-            }
-            _ => {
-                log::error!("invalid github repo name");
-                Err(anyhow!("invalid github repo string"))
-            }
+fn parse_github_repo_string(repo_str: &str) -> Result<RepoConfig> {
+    let names: Vec<&str> = repo_str.split('/').collect();
+    match &names[..] {
+        [user, repo] => {
+            let repo = RepoConfig {
+                url: format!("git://github.com/{}/{}.git", user, repo),
+                path: format!("github/{}/{}.git", user, repo),
+                mirror_urls: vec![], // vec![format!("https://hub.fastgit.org/{}/{}", user, repo)],
+            };
+            Ok(repo)
         }
-    }
-
-    pub fn add_repo(&mut self, cfg: RepoConfig) -> Result<()> {
-        if !Path::new(&cfg.path).is_relative() {
-            return Err(anyhow!("path can only been relative"));
-        }
-        self.repo_list.push(RepoMirror { config: cfg });
-        Ok(())
-    }
-
-    pub fn add_github_repo(&mut self, name: &str) -> Result<()> {
-        log::info!("add github repository {}", name);
-        if name.contains('/') {
-            self.add_repo(Self::parse_github_repo_string(name)?)
-        } else {
-            // self.add_github_org(name)
-            Err(anyhow!("mirror github user not supported yet"))
-        }
-    }
-
-    pub fn update(&self) {
-        for r in &self.repo_list {
-            let mut progress_handler = ProgressIndicator::new();
-            let sync_result = r.sync(Some(&mut progress_handler));
-            drop(progress_handler);
-            if let Err(err) = sync_result {
-                log::error!("sync '{}' error: {:?}", r.config.url, err);
-            }
+        _ => {
+            log::error!("invalid github repo name");
+            Err(anyhow!("invalid github repo string"))
         }
     }
 }

@@ -1,7 +1,8 @@
 mod repo;
 
 use anyhow::Context;
-use repo::{RepoConfig, RepoManager};
+use repo::github_helper::list_github_user_repos;
+use repo::{MirrorBot, RepoConfig};
 use serde_derive::Deserialize;
 
 #[derive(Deserialize, Debug)]
@@ -18,7 +19,10 @@ fn main() {
         .filter_level(log::LevelFilter::Info)
         .init();
 
-    // read config
+    // let repo_names = list_github_user_repos("xgzeng").expect("list_github_user_repos");
+    // println!("{} repos got", repo_names.len());
+
+    // read config file
     let config_str = std::fs::read_to_string("git-mirror.toml").expect("read config file failed");
 
     let config: MainConfig = toml::from_str(config_str.as_str())
@@ -27,16 +31,17 @@ fn main() {
 
     log::info!("{:?}", config);
 
-    let mut repo_manager = RepoManager::new();
     for repo_name in &config.github_repos {
-        repo_manager
-            .add_github_repo(repo_name)
-            .expect("add repo failed")
+        let mirror = MirrorBot::from_simple_name(repo_name).expect("");
+        if let Err(err) = mirror.sync_with_progressbar() {
+            log::error!("sync {} error: {:?}", repo_name, err);
+        }
     }
 
     for r in &config.repo {
-        repo_manager.add_repo(r.clone()).expect("add repo failed")
+        let mirror = MirrorBot::new(r).expect("");
+        if let Err(err) = mirror.sync_with_progressbar() {
+            log::error!("sync {} error: {:?}", r.url, err);
+        }
     }
-
-    repo_manager.update();
 }
