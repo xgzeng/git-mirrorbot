@@ -2,7 +2,7 @@ mod github;
 
 mod progress;
 
-use anyhow::{anyhow, Context, Result};
+use anyhow::{anyhow, Result};
 use std::path::PathBuf;
 
 use progress::{FetchProgressHandler, ProgressIndicator};
@@ -30,14 +30,14 @@ impl RepoMirror {
     }
 
     fn local_path(&self) -> PathBuf {
-        // PathBuf::from(self.config.path)
         let mut p = PathBuf::from("mirrors").join(&self.path);
         if p.extension().is_none() {
             p.set_extension("git");
         }
         p
     }
-    pub fn sync(&self, progress_handler: Option<&mut dyn FetchProgressHandler>) -> Result<()> {
+
+    pub fn sync(&self, fetch_options: Option<&mut git2::FetchOptions<'_>>) -> Result<()> {
         if !self.local_path().exists() {
             log::info!(
                 "{} not exists, init bare repository",
@@ -45,8 +45,7 @@ impl RepoMirror {
             );
             self.init()?;
         }
-        self.fetch(progress_handler)?;
-        Ok(())
+        self.fetch(fetch_options)
     }
 
     fn init(&self) -> Result<()> {
@@ -62,21 +61,22 @@ impl RepoMirror {
         Ok(())
     }
 
-    fn fetch(&self, progress_handler: Option<&mut dyn FetchProgressHandler>) -> Result<()> {
+    fn fetch(&self, fetch_options: Option<&mut git2::FetchOptions<'_>>) -> Result<()> {
         log::info!("fetch {}", self.url);
-        let mut fetch_opts = git2::FetchOptions::new();
-        if let Some(handler) = progress_handler {
-            fetch_opts.remote_callbacks(handler.as_remote_callbacks());
-        }
 
         log::info!("open bare repository {}", self.local_path().display());
         let repo = git2::Repository::open_bare(self.local_path())?;
 
         // check main url match with origin remote
         {
-            let origin_remote = repo.find_remote("origin")?;
-            if origin_remote.url().unwrap_or("") != self.url {
-                return Err(anyhow!("origin remote url not match"));
+            let r = repo.find_remote("origin")?;
+            let origin_url = r.url().unwrap_or("");
+            if origin_url != self.url {
+                return Err(anyhow!(
+                    "origin remote url {} not match {}",
+                    origin_url,
+                    self.url
+                ));
             }
         }
 
@@ -89,33 +89,8 @@ impl RepoMirror {
             _ => repo.find_remote("origin")?,
         };
 
-        remote
-            .connect(git2::Direction::Fetch)
-            .context("connect to remote")?;
-
-        log::info!("remote connected");
-        // {
-        //     log::info!("remote download");
-        //     let fetch_opts = git2::FetchOptions::new();
-
-        //     let callbacks: Option<git2::RemoteCallbacks<'_>> =
-        //         progress_handler.map(|h| h.as_remote_callbacks());
-
-        //     if let Some(cb) = callbacks {
-        //         fetch_opts.remote_callbacks(cb);
-        //     }
-
-        //     let specs: Vec<&str> = vec![];
-        //     remote.download(&specs, Some(&mut fetch_opts))?;
-        // }
-        // remote.update_tips(
-        //     None, // callbacks1.as_mut(),
-        //     true,
-        //     git2::AutotagOption::All,
-        //     Some("some message"),
-        // )?;
         let empty_refs = Vec::<&str>::new();
-        remote.fetch(&empty_refs, Some(&mut fetch_opts), None)?;
+        remote.fetch(&empty_refs, fetch_options, None)?;
         Ok(())
     }
 }
@@ -143,10 +118,19 @@ impl MirrorBot {
 
     pub fn sync_with_progressbar(&self) -> Result<()> {
         let mut progress_handler = ProgressIndicator::new();
+        //
+        let mut fetch_opts = git2::FetchOptions::new();
+        fetch_opts.remote_callbacks(progress_handler.as_remote_callbacks());
+
+        let mut proxy_options = git2::ProxyOptions::new();
+        proxy_options.url("http://127.0.0.1:8080");
+
+        fetch_opts.proxy_options(proxy_options);
+
         // self.config.sync(Some(&mut progress_handler))
         for repo_cfg in self.repo_provider.repos()? {
             let repo_mirror = RepoMirror::new(repo_cfg);
-            if let Err(err) = repo_mirror.sync(Some(&mut progress_handler)) {
+            if let Err(err) = repo_mirror.sync(Some(&mut fetch_opts)) {
                 log::error!("sync error: {}", err);
             }
         }
