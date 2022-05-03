@@ -112,7 +112,7 @@ impl RepoProvider for GithubUserRepos {
         let repo_names = list_github_user_repos(&self.user)?;
         let user = self.user.clone();
         let iters = repo_names.into_iter().map(move |name| RepoConfig {
-            url: format!("git://github.com/{}/{}.git", user, name),
+            url: format!("https://github.com/{}/{}.git", user, name),
             path: format!("github/{}/{}.git", user, name),
             mirror_urls: vec![],
         });
@@ -129,7 +129,7 @@ pub struct GithubSingleRepo {
 
 impl RepoProvider for GithubSingleRepo {
     fn repos(&self) -> Result<Box<dyn Iterator<Item = RepoConfig>>> {
-        let url = format!("git://github.com/{}/{}.git", self.user, self.repo);
+        let url = format!("https://github.com/{}/{}.git", self.user, self.repo);
         let path = format!("github/{}/{}.git", self.user, self.repo);
         let repo = RepoConfig {
             url,
