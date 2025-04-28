@@ -3,10 +3,11 @@ mod github;
 mod progress;
 
 use anyhow::{anyhow, Result};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use progress::{FetchProgressHandler, ProgressIndicator};
 
+#[derive(Debug, Clone)]
 pub struct RepoConfig {
     url: String,  // main url
     path: String, // mirror url
@@ -15,44 +16,36 @@ pub struct RepoConfig {
 
 // represent a single git repository
 struct RepoMirror {
-    url: String,  // main url
-    path: String, // mirror url
+    url: String, // main url
+    repo_dir: PathBuf,
     mirror_urls: Vec<String>,
 }
 
 impl RepoMirror {
-    fn new(cfg: RepoConfig) -> Self {
+    fn new(cfg: RepoConfig, base_storage_dir: &Path) -> Self {
+        let mut repo_dir = base_storage_dir.join(cfg.path);
+        if repo_dir.extension().is_none() {
+            repo_dir.set_extension("git");
+        }
         RepoMirror {
             url: cfg.url,
-            path: cfg.path,
+            repo_dir,
             mirror_urls: cfg.mirror_urls,
         }
     }
 
-    fn local_path(&self) -> PathBuf {
-        let mut p = PathBuf::from("mirrors").join(&self.path);
-        if p.extension().is_none() {
-            p.set_extension("git");
-        }
-        p
-    }
-
     pub fn sync(&self, fetch_options: Option<&mut git2::FetchOptions<'_>>) -> Result<()> {
-        if !self.local_path().exists() {
-            log::info!(
-                "{} not exists, init bare repository",
-                self.local_path().display()
-            );
+        if !self.repo_dir.exists() {
+            log::info!("{:?} not exists, init bare repository", self.repo_dir);
             self.init()?;
         }
         self.fetch(fetch_options)
     }
 
     fn init(&self) -> Result<()> {
-        let repo_dir = self.local_path();
-        log::info!("init bare repository {}", repo_dir.display());
-        std::fs::create_dir_all(&repo_dir)?;
-        let repo = git2::Repository::init_bare(&repo_dir)?;
+        log::info!("init bare repository {:?}", self.repo_dir);
+        std::fs::create_dir_all(&self.repo_dir)?;
+        let repo = git2::Repository::init_bare(&self.repo_dir)?;
         // create origin remote
         let _remote = repo.remote_with_fetch("origin", &self.url, "+refs/*:refs/*")?;
         let mut cfg = repo.config()?;
@@ -62,11 +55,8 @@ impl RepoMirror {
     }
 
     fn fetch(&self, fetch_options: Option<&mut git2::FetchOptions<'_>>) -> Result<()> {
-        log::info!("fetch {}", self.url);
-
-        log::info!("open bare repository {}", self.local_path().display());
-        let repo = git2::Repository::open_bare(self.local_path())?;
-
+        log::debug!("open bare repository {:?}", self.repo_dir);
+        let repo = git2::Repository::open_bare(&self.repo_dir)?;
         // check main url match with origin remote
         {
             let r = repo.find_remote("origin")?;
@@ -89,52 +79,26 @@ impl RepoMirror {
             _ => repo.find_remote("origin")?,
         };
 
-        let empty_refs = Vec::<&str>::new();
-        remote.fetch(&empty_refs, fetch_options, None)?;
+        log::debug!("fetch {}", remote.url().unwrap());
+        let refspecs = vec!["+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*"];
+
+        remote.fetch(&refspecs, fetch_options, None)?;
         Ok(())
     }
 }
 
-pub trait RepoProvider {
-    // get repo list
-    fn repos(&self) -> Result<Box<dyn Iterator<Item = RepoConfig>>>;
-}
-
-pub struct MirrorBot {
-    repo_provider: Box<dyn RepoProvider>,
-}
-
-impl MirrorBot {
-    pub fn from_simple_name(name: &str) -> Result<Self> {
-        let repo_provider: Box<dyn RepoProvider>;
-        if name.contains('/') {
-            repo_provider = Box::new(github::GithubSingleRepo::new(name)?);
-        } else {
-            repo_provider = Box::new(github::GithubUserRepos::new(name));
-        }
-
-        Ok(MirrorBot { repo_provider })
-    }
-
-    pub fn sync_with_progressbar(&self) -> Result<()> {
+pub fn sync_with_progressbar(repo_name: &str, storage_dir: &Path) -> Result<()> {
+    let repos = github::github_repos(repo_name)?;
+    for repo_cfg in repos {
+        log::info!("syncing {}", repo_cfg.url);
+        let repo_mirror = RepoMirror::new(repo_cfg, storage_dir);
         let mut progress_handler = ProgressIndicator::new();
-        //
-        let mut fetch_opts = git2::FetchOptions::new();
+        let mut fetch_opts = git2::FetchOptions::default();
         fetch_opts.remote_callbacks(progress_handler.as_remote_callbacks());
-
-        let mut proxy_options = git2::ProxyOptions::new();
-        proxy_options.url("http://127.0.0.1:8080");
-
-        fetch_opts.proxy_options(proxy_options);
-
-        // self.config.sync(Some(&mut progress_handler))
-        for repo_cfg in self.repo_provider.repos()? {
-            let repo_mirror = RepoMirror::new(repo_cfg);
-            if let Err(err) = repo_mirror.sync(Some(&mut fetch_opts)) {
-                log::error!("sync error: {}", err);
-            }
+        if let Err(err) = repo_mirror.sync(Some(&mut fetch_opts)) {
+            log::error!("sync error: {}", err);
         }
-
-        Ok(())
     }
+
+    Ok(())
 }

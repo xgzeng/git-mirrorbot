@@ -1,7 +1,10 @@
+use anyhow::{anyhow, Result};
+use indicatif::HumanBytes;
 use indicatif::{ProgressBar, ProgressStyle};
+use lazy_static::lazy_static;
 use std::cell::RefCell;
 use std::rc::Rc;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 pub trait FetchProgressHandler {
     fn on_transfer(&mut self, p: git2::Progress);
@@ -42,118 +45,170 @@ pub trait FetchProgressHandler {
     }
 }
 
-// pub struct LogFetchProgress {}
-
-// impl FetchProgressHandler for LogFetchProgress {
-//     fn on_transfer(&mut self, p: git2::Progress) {
-//         log::info!(
-//             "objects: total {}, received {},",
-//             p.total_objects(),
-//             p.received_objects()
-//         );
-//     }
-
-//     fn on_update_tips(&mut self, name: &str, oid_from: git2::Oid, oid_to: git2::Oid) {
-//         log::info!("update_tips: {} {} {}", name, oid_from, oid_to);
-//     }
-
-//     fn on_sideband(&mut self, msg: &[u8]) {
-//         log::info!("sideband_progress: {}", String::from_utf8_lossy(msg));
-//     }
-// }
-
-enum ProgressStage {
-    NotStarted,
-    Download(u64, Instant), // received bytes, receive_time
-    Sideband,
-}
-
 pub struct ProgressIndicator {
     indicator: ProgressBar,
-    stage: ProgressStage,
+    sideband_buffer: Vec<u8>,                       // sideband byte buffer
+    last_transfer_update: Option<(Instant, usize)>, // for data rate calculation
+}
+
+struct SidebandProgress {
+    prefix: String,
+    percent: usize,
+    m: usize,
+    n: usize,
+    done: bool,
+}
+
+lazy_static! {
+    // Regex to capture:
+    // 1: Prefix (any characters before the colon)
+    // 2: Percentage
+    // 3: Current count (m)
+    // 4: Total count (n)
+    // 5: Optional ", done." part
+    static ref SIDEBAND_RE: regex::Regex = regex::Regex::new(
+        // Match any non-colon characters for the prefix
+        r"^([^:]+):\s+(\d+)%\s+\((\d+)/(\d+)\)(, done\.)?$"
+    ).unwrap();
+}
+
+/// parse sideband message like:
+///   "Compressing objects: 100% (129/146), done."
+///   "Counting objects:  54% (108/200)"
+///   "Receiving objects:  50% (10/20)"
+fn parse_sideband_msg(msg: &str) -> Result<SidebandProgress> {
+    if let Some(caps) = SIDEBAND_RE.captures(msg.trim()) {
+        let prefix = caps.get(1).map_or("", |m| m.as_str()).to_string();
+        let percent = caps.get(2).map_or("0", |m| m.as_str()).parse::<usize>()?;
+        let m = caps.get(3).map_or("0", |m| m.as_str()).parse::<usize>()?;
+        let n = caps.get(4).map_or("0", |m| m.as_str()).parse::<usize>()?;
+        let done = caps.get(5).is_some();
+
+        Ok(SidebandProgress {
+            prefix,
+            percent,
+            m,
+            n,
+            done,
+        })
+    } else {
+        Err(anyhow!("unknown or malformed sideband message: {}", msg))
+    }
 }
 
 impl FetchProgressHandler for ProgressIndicator {
     fn on_transfer(&mut self, p: git2::Progress) {
-        match self.stage {
-            ProgressStage::Download(prev_received_bytes, prev_recv_time) => {
-                let new_recv_time = Instant::now();
-                let duration = new_recv_time.duration_since(prev_recv_time).as_secs_f32();
-                if duration > 2.0 {
-                    let recv_bytes = p.received_bytes() as u64;
+        self.indicator.set_length(p.total_objects() as u64);
+        self.indicator.set_position(p.received_objects() as u64);
 
-                    let datarate = if recv_bytes > prev_received_bytes {
-                        (recv_bytes - prev_received_bytes) as f32 / duration
-                    } else {
-                        0.0
-                    };
-
-                    self.stage = ProgressStage::Download(recv_bytes, new_recv_time);
-                    self.indicator.set_message(format!(
-                        "{}kB/s, local {}",
-                        datarate / 1000.0,
-                        p.local_objects()
-                    ));
-                }
-                self.indicator.set_position(p.received_objects() as u64);
+        // calculate transfer rate
+        let current_bytes = p.received_bytes();
+        let now = Instant::now();
+        if let Some((last_time, last_bytes)) = self.last_transfer_update {
+            let duration = now.duration_since(last_time);
+            // make datarate calculation only if we have a reasonable time difference
+            if duration < Duration::from_millis(500) {
+                return;
             }
-            _ => {
-                // enter download state
-                self.reset(); // recreate indicator
-                              // self.indicator.reset();
-                              // self.indicator.finish_and_clear(); // clear indicator
-                log::info!(
-                    "download objects: total {}, total_deltas {}, local {}",
-                    p.total_objects(),
-                    p.total_deltas(),
-                    p.local_objects()
-                );
-                self.stage = ProgressStage::Download(0, Instant::now());
-                self.indicator.set_length(p.total_objects() as u64);
-                self.indicator
-                    .set_style(ProgressStyle::default_bar().template(
-                        "[{elapsed_precise}] {bar:40.cyan/blue} Objects {pos:>7}/{len:7}, {msg}",
-                    ));
-            }
+            let byte_diff = current_bytes.saturating_sub(last_bytes);
+            let datarate = (byte_diff as f64 / duration.as_secs_f64()) / 1024.0; // Rate in KiB/s
+            self.indicator.set_message(format!(
+                "({:.1} KiB/s, {})",
+                datarate,
+                HumanBytes(current_bytes as u64)
+            ));
+            self.last_transfer_update = Some((now, current_bytes));
+        } else {
+            // first time we get transfer data
+            self.last_transfer_update = Some((now, current_bytes));
         }
     }
 
     fn on_pack(&mut self, stage: git2::PackBuilderStage, m: usize, n: usize) {
-        log::info!("pack: {:?} {} {}", stage, m, n);
+        self.indicator
+            .println(format!("pack: {:?} {} {}", stage, m, n));
     }
 
     fn on_update_tips(&mut self, name: &str, oid_from: git2::Oid, oid_to: git2::Oid) {
-        log::info!("update_tips: {} {} {}", name, oid_from, oid_to);
+        if oid_from.is_zero() {
+            self.indicator
+                .println(format!("update refs: {} -> {}", name, oid_to));
+        } else {
+            self.indicator
+                .println(format!("update refs: {} {} -> {}", name, oid_from, oid_to));
+        }
     }
 
+    // sideband data is continue streaming
     fn on_sideband(&mut self, bytes: &[u8]) {
-        match self.stage {
-            ProgressStage::Sideband => {
-                self.indicator
-                    .set_message(format!("remote: {}", String::from_utf8_lossy(bytes)));
+        // Append new data bytes directly to the buffer
+        self.sideband_buffer.extend_from_slice(bytes);
+
+        // Process complete lines from the byte buffer
+        loop {
+            // Find the position of the first newline character
+            let newline_pos = match self.sideband_buffer.iter().position(|&b| b == b'\n') {
+                Some(pos) => pos,
+                None => break, // No complete line found, exit loop
+            };
+
+            // Drain the line (including the newline) from the buffer
+            // split_off leaves the remaining part in self.sideband_buffer
+            let remaining = self.sideband_buffer.split_off(newline_pos + 1);
+            let line_bytes = std::mem::replace(&mut self.sideband_buffer, remaining);
+
+            // Convert the line bytes to a string (lossily)
+            let line = String::from_utf8_lossy(&line_bytes);
+            // Trim whitespace (including the newline itself and potential carriage returns)
+            let trimmed_line = line.trim();
+
+            if trimmed_line.is_empty() {
+                continue; // Skip empty lines
             }
-            _ => {
-                self.stage = ProgressStage::Sideband;
-                self.indicator = ProgressBar::new_spinner();
+
+            // Attempt to parse the line as a progress message
+            if let Ok(progress) = parse_sideband_msg(trimmed_line) {
+                self.indicator.set_length(100); // Sideband progress is usually percentage based
+                self.indicator.set_position(progress.percent as u64);
+                // Clear transfer rate when sideband starts reporting progress
+                self.last_transfer_update = None;
+                if progress.done {
+                    self.indicator.println(format!("{} done", progress.prefix));
+                    // Reset message or set to a default after "done"
+                    self.indicator.set_length(0);
+                    self.indicator.set_position(0);
+                    self.indicator.set_message("");
+                } else {
+                    self.indicator
+                        .set_message(format!("{} {}/{}", progress.prefix, progress.m, progress.n));
+                }
+            } else {
+                // If parsing fails, print the line as a regular sideband message
+                self.indicator.println(format!("{}", trimmed_line));
             }
         }
+        // Any remaining data in self.sideband_buffer is an incomplete line
     }
 }
 
 impl ProgressIndicator {
     pub fn new() -> Self {
-        let ind = ProgressBar::new(100);
-        ind.set_style(
+        let indicator = ProgressBar::new(0); // Start with 0 length until known
+        indicator.set_style(
             ProgressStyle::default_bar()
-                .template("[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg}"),
+                .template("[{elapsed_precise}] {bar:40.cyan/blue} {pos:>7}/{len:7} {msg}")
+                .unwrap(),
         );
-        ProgressIndicator {
-            indicator: ind,
-            stage: ProgressStage::NotStarted,
+        Self {
+            indicator,
+            sideband_buffer: Vec::new(),
+            last_transfer_update: None, // Initialize last update state
         }
     }
+}
 
-    fn reset(&mut self) {
-        self.indicator = ProgressBar::new(100);
+impl Drop for ProgressIndicator {
+    fn drop(&mut self) {
+        self.indicator.finish_and_clear();
     }
 }
