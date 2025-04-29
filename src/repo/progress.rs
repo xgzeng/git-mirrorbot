@@ -126,16 +126,16 @@ impl FetchProgressHandler for ProgressIndicator {
 
     fn on_pack(&mut self, stage: git2::PackBuilderStage, m: usize, n: usize) {
         self.indicator
-            .println(format!("pack: {:?} {} {}", stage, m, n));
+            .suspend(|| log::info!("pack: {:?} {} {}", stage, m, n));
     }
 
     fn on_update_tips(&mut self, name: &str, oid_from: git2::Oid, oid_to: git2::Oid) {
         if oid_from.is_zero() {
             self.indicator
-                .println(format!("update refs: {} -> {}", name, oid_to));
+                .suspend(|| log::info!("update {}: {}", name, oid_to));
         } else {
             self.indicator
-                .println(format!("update refs: {} {} -> {}", name, oid_from, oid_to));
+                .suspend(|| log::info!("update {}: {} -> {}", name, oid_from, oid_to));
         }
     }
 
@@ -173,7 +173,9 @@ impl FetchProgressHandler for ProgressIndicator {
                 // Clear transfer rate when sideband starts reporting progress
                 self.last_transfer_update = None;
                 if progress.done {
-                    self.indicator.println(format!("{} done", progress.prefix));
+                    self.indicator.suspend(|| {
+                        log::info!("{} done", progress.prefix);
+                    });
                     // Reset message or set to a default after "done"
                     self.indicator.set_length(0);
                     self.indicator.set_position(0);
@@ -184,7 +186,7 @@ impl FetchProgressHandler for ProgressIndicator {
                 }
             } else {
                 // If parsing fails, print the line as a regular sideband message
-                self.indicator.println(format!("{}", trimmed_line));
+                self.indicator.suspend(|| log::info!("{}", trimmed_line));
             }
         }
         // Any remaining data in self.sideband_buffer is an incomplete line

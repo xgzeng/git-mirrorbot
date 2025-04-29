@@ -33,7 +33,7 @@ jobs:
         run: cargo test --release --verbose
 
       - name: Install cargo-deb
-        run: cargo install cargo-deb
+        run: cargo install --force cargo-deb
 
       - name: Build deb package
         run: cargo deb

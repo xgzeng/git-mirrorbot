@@ -65,13 +65,15 @@ impl RepoMirror {
 pub fn sync_with_progressbar(repo_name: &str, storage_dir: &Path) -> Result<()> {
     let repos = github::github_repos(repo_name)?;
     for repo_cfg in repos {
-        log::info!("syncing {}", repo_cfg.url);
+        log::info!("sync {}", repo_cfg.url);
         let repo_mirror = RepoMirror::new(repo_cfg, storage_dir);
         let mut progress_handler = ProgressIndicator::new();
         let mut fetch_opts = git2::FetchOptions::default();
         fetch_opts.remote_callbacks(progress_handler.as_remote_callbacks());
         if let Err(err) = repo_mirror.sync(Some(&mut fetch_opts)) {
             log::error!("sync error: {}", err);
+        } else {
+            log::info!("sync done");
         }
     }
 
