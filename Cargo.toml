@@ -1,7 +1,10 @@
 [package]
 name = "git-mirrorbot"
 edition = "2021"
-version = "0.0.0"
+version = "0.0.1"
+license = "MIT"
+authors = ["XiaoGuang Zeng"]
+description = "A tool to mirror git repositories"
 
 [dependencies]
 git2 = "0.20.1"
@@ -16,3 +19,16 @@ reqwest = { version = "0.12.15", features = ["blocking", "json"] }
 clap = { version = "4.5.37", features = ["derive"] }
 regex = "1.11.1"
 lazy_static = "1.5.0"
+
+[package.metadata.deb]
+revision = "1"
+maintainer = "xgzeng@gmail.com"
+maintainer-scripts = "debian/"
+section = "utils"
+priority = "optional"
+assets = [
+    ["debian/git-mirrorbot.yml", "etc/", "644"],
+    ["target/release/git-mirrorbot", "usr/bin/", "755"],
+]
+conf-files = ["/etc/git-mirrorbot.yml"]
+systemd-units = { enable = false }

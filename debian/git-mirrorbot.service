@@ -1,0 +1,11 @@
+[Unit]
+Description=Git Mirror Bot Service
+
+[Service]
+User=git-mirrorbot
+Group=git-mirrorbot
+ExecStart=/usr/bin/git-mirrorbot -c /etc/git-mirrorbot.yml
+Restart=no
+
+[Install]
+WantedBy=multi-user.target

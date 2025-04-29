@@ -1,0 +1,24 @@
+#!/bin/sh
+set -e
+
+case "$1" in
+    remove|upgrade|deconfigure)
+        if getent passwd git-mirrorbot > /dev/null; then
+            echo "Removing system user git-mirrorbot..."
+            deluser --system --quiet git-mirrorbot || true
+            delgroup --system --quiet git-mirrorbot || true
+        fi
+    ;;
+
+    failed-upgrade)
+    ;;
+
+    *)
+        echo "prerm called with unknown argument \`$1\'" >&2
+        exit 1
+    ;;
+esac
+
+#DEBHELPER#
+
+exit 0

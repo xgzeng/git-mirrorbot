@@ -1,0 +1,4 @@
+storage_dir: /var/lib/git-mirrorbot/
+
+mirrors:
+  - torvalds/linux

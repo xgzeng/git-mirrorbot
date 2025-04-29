@@ -30,21 +30,29 @@ jobs:
         run: cargo build --release --verbose
 
       - name: Run tests
-        run: cargo test --release --verbose # Run tests on release build
+        run: cargo test --release --verbose
 
-      - name: Upload build artifact
+      - name: Install cargo-deb
+        run: cargo install cargo-deb
+
+      - name: Build deb package
+        run: cargo deb
+
+      - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
           name: git-mirrorbot-binary
-          path: target/release/git-mirrorbot # Adjust binary name if needed
+          path: |
+            target/release/git-mirrorbot
+            target/debian/*.deb
 
   upload_dev_binary:
-    name: Upload Nightly Binary Artifact # Changed name for clarity
+    name: Upload Nightly Binary Artifact
     needs: build
     if: github.ref == 'refs/heads/main' && github.event_name == 'push' # Only on direct pushes to main
     runs-on: ubuntu-latest
     steps:
-      - name: Download build artifact
+      - name: Download build artifacts
         uses: actions/download-artifact@v4
         with:
           name: git-mirrorbot-binary
@@ -55,26 +63,7 @@ jobs:
       - name: Upload release asset
         uses: softprops/action-gh-release@v2
         with:
-          files: git-mirrorbot
+          files: |
+            git-mirrorbot
+            target/debian/*.deb
           tag_name: nightly
-
-  upload_binary:
-    name: Upload Release Binary
-    needs: build # Depends on the build job
-    if: startsWith(github.ref, 'refs/tags/v') # Only run on tag pushes like v1.0.0
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write # Needed to create releases and upload assets
-    steps:
-      - name: Download build artifact
-        uses: actions/download-artifact@v4
-        with:
-          name: git-mirrorbot-binary
-
-      - name: Make binary executable
-        run: chmod +x git-mirrorbot
-
-      - name: Upload release asset
-        uses: softprops/action-gh-release@v2
-        with:
-          files: git-mirrorbot

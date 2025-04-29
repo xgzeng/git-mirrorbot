@@ -1,0 +1,30 @@
+#!/bin/sh
+set -e
+
+case "$1" in
+    configure)
+        if ! getent passwd git-mirrorbot > /dev/null; then
+            echo "Adding system user git-mirrorbot..."
+            adduser --system --group --no-create-home --disabled-login --quiet git-mirrorbot
+        fi
+        # Create storage directory if it doesn't exist
+        STORAGE_DIR="/var/lib/git-mirrorbot"
+        if [ ! -d "$STORAGE_DIR" ]; then
+            echo "Creating storage directory $STORAGE_DIR..."
+            mkdir -p "$STORAGE_DIR"
+            chown git-mirrorbot:git-mirrorbot "$STORAGE_DIR"
+        fi
+    ;;
+
+    abort-upgrade|abort-remove|abort-deconfigure)
+    ;;
+
+    *)
+        echo "postinst called with unknown argument \`$1\'" >&2
+        exit 1
+    ;;
+esac
+
+#DEBHELPER#
+
+exit 0
