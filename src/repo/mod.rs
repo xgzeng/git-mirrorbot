@@ -36,7 +36,6 @@ impl RepoMirror {
 
     pub fn sync(&self, fetch_options: Option<&mut git2::FetchOptions<'_>>) -> Result<()> {
         if !self.repo_dir.exists() {
-            log::info!("{:?} not exists, init bare repository", self.repo_dir);
             self.init()?;
         }
         self.fetch(fetch_options)
@@ -47,41 +46,17 @@ impl RepoMirror {
         std::fs::create_dir_all(&self.repo_dir)?;
         let repo = git2::Repository::init_bare(&self.repo_dir)?;
         // create origin remote
-        let _remote = repo.remote_with_fetch("origin", &self.url, "+refs/*:refs/*")?;
-        let mut cfg = repo.config()?;
-        let cfg_item = format!("remote.{}.mirror", "origin");
-        cfg.set_bool(&cfg_item, true)?;
+        repo.remote_with_fetch("origin", &self.url, "+refs/*:refs/*")?;
+        repo.config()?.set_bool("remote.origin.mirror", true)?;
         Ok(())
     }
 
     fn fetch(&self, fetch_options: Option<&mut git2::FetchOptions<'_>>) -> Result<()> {
         log::debug!("open bare repository {:?}", self.repo_dir);
         let repo = git2::Repository::open_bare(&self.repo_dir)?;
-        // check main url match with origin remote
-        {
-            let r = repo.find_remote("origin")?;
-            let origin_url = r.url().unwrap_or("");
-            if origin_url != self.url {
-                return Err(anyhow!(
-                    "origin remote url {} not match {}",
-                    origin_url,
-                    self.url
-                ));
-            }
-        }
-
-        // determine mirror to use
-        let mut remote = match self.mirror_urls.as_slice() {
-            [url, ..] => {
-                log::info!("user mirror {}", url);
-                repo.remote_anonymous(url)?
-            }
-            _ => repo.find_remote("origin")?,
-        };
-
+        let mut remote = repo.find_remote("origin")?;
         log::debug!("fetch {}", remote.url().unwrap());
         let refspecs = vec!["+refs/heads/*:refs/heads/*", "+refs/tags/*:refs/tags/*"];
-
         remote.fetch(&refspecs, fetch_options, None)?;
         Ok(())
     }
