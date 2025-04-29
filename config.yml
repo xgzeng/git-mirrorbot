@@ -1,4 +1,2 @@
 mirrors:
-#  - torvalds/linux
-#  - cloud-hypervisor
-  - zephyrproject-rtos/zephyr
+  - torvalds/linux
