@@ -42,6 +42,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: git-mirrorbot-binary
+          # Least common ancestor of all the paths will be used as the root directory of the artifact
           path: |
             target/release/git-mirrorbot
             target/debian/*.deb
@@ -55,15 +56,20 @@ jobs:
       - name: Download build artifacts
         uses: actions/download-artifact@v4
         with:
+          # artifact contents: release/git-mirrorbot, debian/*.deb
           name: git-mirrorbot-binary
+          path: target
+
+      - name: Display structure of downloaded files
+        run: ls -R .
 
       - name: Make binary executable
-        run: chmod +x git-mirrorbot
+        run: chmod +x target/release/git-mirrorbot
 
       - name: Upload release asset
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            git-mirrorbot
+            target/release/git-mirrorbot
             target/debian/*.deb
           tag_name: nightly
