@@ -1,26 +1,46 @@
 mod github;
 
-use anyhow::Result;
+use anyhow::{anyhow, Context, Result};
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+const DEFAULT_REPO_SYNC_INTERVAL: Duration = Duration::from_hours(24); // 1 day
+const DEFAULT_USER_SYNC_INTERVAL: Duration = Duration::from_hours(24 * 7); // 1 week
+
+enum RepoSet {
+    GithubUser(String),
+    GithubRepo { user: String, repo: String },
+}
+
+impl RepoSet {
+    pub fn parse(id: &str) -> Result<Self> {
+        let parts: Vec<&str> = id.split('/').collect();
+        match parts[..] {
+            [user, repo] => Ok(RepoSet::GithubRepo {
+                user: user.to_string(),
+                repo: repo.to_string(),
+            }),
+            [user] => Ok(RepoSet::GithubUser(user.to_string())),
+            _ => Err(anyhow!("invalid repo id {}", id)),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct RepoConfig {
-    url: String,  // main url
-    path: String, // mirror url
+    url: String,       // main url
+    repo_dir: PathBuf, // repository directory path
     mirror_urls: Vec<String>,
     sync_interval: Duration,
 }
 
-const DEFAULT_SYNC_INTERVAL: Duration = Duration::from_secs(60 * 60 * 24); // 1 day
-
 impl RepoConfig {
-    pub fn new(url: String, path: String) -> Self {
+    pub fn new(url: String, repo_dir: &Path) -> Self {
         Self {
             url,
-            path,
+            repo_dir: repo_dir.to_path_buf(),
             mirror_urls: vec![],
-            sync_interval: DEFAULT_SYNC_INTERVAL,
+            sync_interval: DEFAULT_REPO_SYNC_INTERVAL,
         }
     }
 }
@@ -150,14 +170,10 @@ struct RepoMirror {
 }
 
 impl RepoMirror {
-    fn new(cfg: RepoConfig, base_storage_dir: &Path) -> Self {
-        let mut repo_dir = base_storage_dir.join(cfg.path);
-        if repo_dir.extension().is_none() {
-            repo_dir.set_extension("git");
-        }
+    fn new(cfg: RepoConfig) -> Self {
         RepoMirror {
             url: cfg.url,
-            repo_dir,
+            repo_dir: cfg.repo_dir,
             mirror_urls: cfg.mirror_urls,
             sync_interval: cfg.sync_interval,
         }
@@ -234,12 +250,119 @@ impl RepoMirror {
     }
 }
 
+/// Cached list of repositories for a GitHub user.
+#[derive(serde_derive::Serialize, serde_derive::Deserialize, Default)]
+struct UserRepoListCache {
+    /// RFC 3339 timestamp of when the list was last fetched.
+    last_sync_time: Option<String>,
+    repos: Vec<String>,
+}
+
+impl UserRepoListCache {
+    const FILENAME: &'static str = "repo_list_cache.json";
+
+    fn load(user_dir: &Path) -> Self {
+        let path = user_dir.join(Self::FILENAME);
+        std::fs::read_to_string(&path)
+            .ok()
+            .and_then(|s| serde_json::from_str(&s).ok())
+            .unwrap_or_default()
+    }
+
+    fn save(&self, user_dir: &Path) -> Result<()> {
+        std::fs::create_dir_all(user_dir)?;
+        let path = user_dir.join(Self::FILENAME);
+        let json = serde_json::to_string_pretty(self)?;
+        std::fs::write(path, json)?;
+        Ok(())
+    }
+
+    fn is_expired(&self, expire_duration: Duration) -> bool {
+        match &self.last_sync_time {
+            None => true,
+            Some(ts) => {
+                let now = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                let last = parse_rfc3339(ts).unwrap_or(0);
+                Duration::from_secs(now.saturating_sub(last)) >= expire_duration
+            }
+        }
+    }
+}
+
+/**
+ * Sync repo list for a github user.
+ * @param user: github username
+ * @param user_dir: base storage dir for all repos of the user, e.g. "/data/git/users/<username>"
+ * @param expire_duration: if specified, only sync user repo list that haven't been synced within this duration.
+ * This is used to avoid syncing too frequently.
+ */
+fn sync_github_user_repos(
+    user: &str,
+    user_dir: &Path,
+    expire_duration: Option<Duration>,
+) -> Result<Vec<String>> {
+    let cache = UserRepoListCache::load(user_dir);
+
+    if let Some(expire) = expire_duration {
+        if !cache.is_expired(expire) {
+            log::info!(
+                "using cached repo list for {} ({} repos, last synced {})",
+                user,
+                cache.repos.len(),
+                cache.last_sync_time.as_deref().unwrap_or("never"),
+            );
+            return Ok(cache.repos);
+        }
+    }
+
+    let repos =
+        github::list_user_repos(user).context(format!("failed to list repos for user {}", user))?;
+
+    let new_cache = UserRepoListCache {
+        last_sync_time: Some(format_rfc3339(std::time::SystemTime::now())),
+        repos: repos.clone(),
+    };
+    if let Err(e) = new_cache.save(user_dir) {
+        log::warn!("failed to save repo list cache for {}: {}", user, e);
+    }
+
+    Ok(repos)
+}
+
 pub fn sync(repo_name: &str, storage_dir: &Path) -> Result<()> {
-    let repos = github::github_repos(repo_name)?;
+    let repo_set = RepoSet::parse(repo_name)?;
+
+    let mut repos: Vec<RepoConfig> = vec![];
+
+    // let repos = github::github_repos(repo_name)?;
+    match repo_set {
+        RepoSet::GithubRepo { user, repo } => {
+            let repo_ = format!("https://github.com/{}/{}.git", user, repo);
+            let repo_dir = storage_dir
+                .join("github")
+                .join(&user)
+                .join(format!("{}.git", repo));
+            repos.push(RepoConfig::new(repo_, &repo_dir));
+        }
+        RepoSet::GithubUser(user) => {
+            let user_dir = storage_dir.join("github").join(&user);
+            let user_repos =
+                sync_github_user_repos(&user, &user_dir, Some(DEFAULT_USER_SYNC_INTERVAL))?;
+            for repo in user_repos {
+                let repo_url = format!("https://github.com/{}/{}.git", user, repo);
+                let repo_dir = user_dir.join(format!("{}.git", repo));
+                repos.push(RepoConfig::new(repo_url, &repo_dir));
+            }
+        }
+    }
+
     for repo_cfg in repos {
-        let repo_mirror = RepoMirror::new(repo_cfg, storage_dir);
+        let repo_mirror = RepoMirror::new(repo_cfg);
         if !repo_mirror.need_sync() {
-            log::info!("skip sync {}", repo_mirror.url);
+            log::info!("skip {}", repo_mirror.url);
             continue;
         }
         log::info!("start sync {}", repo_mirror.url);
