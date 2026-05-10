@@ -20,6 +20,6 @@ pub fn from_file(file_path: &Path) -> Result<AppConfig> {
     }
     let file = std::fs::File::open(file_path)?;
     let reader = std::io::BufReader::new(file);
-    let config: AppConfig = serde_yml::from_reader(reader)?;
+    let config: AppConfig = yaml_serde::from_reader(reader)?;
     Ok(config)
 }

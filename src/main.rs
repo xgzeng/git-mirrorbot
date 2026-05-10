@@ -36,7 +36,7 @@ fn main() -> Result<()> {
     }
 
     for repo_name in &app_config.mirrors {
-        if let Err(err) = repo::sync_with_progressbar(repo_name, &app_config.storage_dir) {
+        if let Err(err) = repo::sync(repo_name, &app_config.storage_dir) {
             log::error!("sync {} error: {:?}", repo_name, err);
         }
     }

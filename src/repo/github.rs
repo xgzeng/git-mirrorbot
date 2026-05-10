@@ -80,10 +80,11 @@ fn repos_of_user(user: &str) -> Result<Vec<RepoConfig>> {
     let repo_names = list_github_user_repos(user)?;
     let repos = repo_names
         .into_iter()
-        .map(move |name| RepoConfig {
-            url: format!("https://github.com/{}/{}.git", user, name),
-            path: format!("github/{}/{}.git", user, name),
-            mirror_urls: vec![],
+        .map(move |name| {
+            RepoConfig::new(
+                format!("https://github.com/{}/{}.git", user, name),
+                format!("github/{}/{}.git", user, name),
+            )
         })
         .collect();
     Ok(repos)
@@ -95,11 +96,7 @@ pub fn github_repos(id: &str) -> Result<Vec<RepoConfig>> {
         [user, repo] => {
             let url = format!("https://github.com/{}/{}.git", user, repo);
             let path = format!("github/{}/{}.git", user, repo);
-            let repo = RepoConfig {
-                url,
-                path,
-                mirror_urls: vec![],
-            };
+            let repo = RepoConfig::new(url, path);
             Ok(vec![repo])
         }
         [user] => repos_of_user(user),

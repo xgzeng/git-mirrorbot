@@ -7,15 +7,15 @@ authors = ["XiaoGuang Zeng"]
 description = "A tool to mirror git repositories"
 
 [dependencies]
-git2 = "0.20.1"
-env_logger = "0.11.8"
-log = "0.4.0"
+git2 = "0.20"
+env_logger = "0.11"
+log = "0.4"
 serde = "1.0"
 serde_derive = "1.0"
-serde_yml = "0.0.12"
-anyhow = "1.0.98"
-indicatif = "0.17.0"
-reqwest = { version = "0.12.15", features = ["blocking", "json"] }
+serde_json = "1.0"
+yaml_serde = "0.10"
+anyhow = "1.0"
+reqwest = { version = "0.13", features = ["blocking", "json"] }
 clap = { version = "4.5.37", features = ["derive"] }
 regex = "1.11.1"
 lazy_static = "1.5.0"
